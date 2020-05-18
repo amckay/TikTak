@@ -1,35 +1,72 @@
 import numpy as np
 import multiprocessing
 import os
+from scipy.optimize import minimize as scipy_minimize
+import nlopt
+import sobol
+import time
 
 class TTOptimizer:
-  """"Optimizer for the TikTak algorithm."""
-  
-  def __init__(self,computation_options, global_search_options, local_search_options):
-    self.computation_options   = computation_options
-    self.global_search_options = global_search_options
-    self.local_search_options = local_search_options
-    self.SRF = os.path.join(computation_options["working_dir"],"searchResults.dat")
-    self.XSF = os.path.join(computation_options["working_dir"],"xstarts.dat")
-    
+    """"Optimizer for the TikTak algorithm."""
 
+    def __init__(self,computation_options, global_search_options, local_search_options):
+        self.computation_options   = computation_options
+        self.global_search_options = global_search_options
+        self.local_search_options = local_search_options
+        self.SRF = os.path.join(computation_options["working_dir"],"searchResults.dat")
+        self.XSF = os.path.join(computation_options["working_dir"],"xstarts.dat")
 
-    def ProcessLocalResult(self,result,best):
-
-        with open(self.SRF,"a") as srf:
-            srf.write(str(result[1]) + ' ' + str(result[0]) + '\n')
-
-        if result[1] < best[1] :
-            print( 'best so far %f' % result[1])
-            return result
+        if self.local_search_options['algorithm'].lower() == 'bobyqa':
+            self.minimizer = BOBYQA
+        elif self.local_search_options['algorithm'].lower() == 'neldermead':
+            self.minimizer = NelderMead
         else:
-            return best
+            raise RunTimeError("local search algorithm not recognized")
 
 
- 
+    def minimize(self,f,lower_bounds,upper_bounds):
+        self.f = f
+        self.lower_bounds = lower_bounds
+        self.upper_bounds = upper_bounds
+        self.initial_step = 0.1*(upper_bounds-lower_bounds)
+        self.nparam = len(lower_bounds)
+
+        self.mppool = multiprocessing.Pool(processes=self.computation_options["num_workers"])
+        self.xstarts = list(self.GlobalSearch())
+        best = self.LocalSearch()
+        # print the last value of best
+        print(f'best value {best[1]}')
+        print(f'best point {best[0]}')
+        return best
+
+    def GlobalSearch(self):
+
+        nsobol = self.global_search_options["num_points"]
+
+        SOBOLSKIP = 2
+
+        # ---- generate Sobol points ----
+        xstarts = sobol.i4_sobol_generate ( self.nparam, nsobol, SOBOLSKIP ).T
+        # scale accoring to the bounds
+        xstarts = self.lower_bounds[np.newaxis,:] + (self.upper_bounds-self.lower_bounds)[np.newaxis,:]*xstarts
 
 
-    def LocalSearch(self,taskq,resultq,xstarts,best = None, StartAt = 0,**kwargs):
+        # --- evaluate f on many points ----
+        y = np.array(self.mppool.map(self.f,xstarts))
+
+
+        # sort the results
+        I = np.argsort(y)
+        xstarts = xstarts[I]
+        y = y[I]
+
+        # take the best Imax
+        xstarts = xstarts[:self.local_search_options["num_restarts"]]
+
+        return xstarts
+
+
+    def LocalSearch(self):
         """Function to manage the local searches.  Each local start is given to a consumer process that
         does the search.
 
@@ -42,105 +79,108 @@ class TTOptimizer:
         StartAt     how far into xstarts do we start  (used if restarting after interuption )
           """
 
-        num_workers = computation_options["num_workers"]
-        num_jobs = len(xstarts)
 
-        def SubmitTask(task):
-          with open(self.XSF,"a") as xsf:
-             xsf.write(str(task) + '\n')
-         tasksq.put(task)
+        manager = multiprocessing.Manager()
+        self.resultsq = manager.Queue()
 
-
-        # Enqueue jobs
-        if best is None:
-            best = (0.0, 1e10)
-            
-        # To start, give one job to each consumer
-        for i in range(StartAt,StartAt + num_workers):
-            SubmitTask(xstarts[i])
-
-        # then wait for results and when a result comes in analyze it and send out a new job
-        i =  StartAt + num_workers
-        while i < num_jobs:
-
-            best = self.ProcessResult(resultsq.get(),best)
-
-            ishrink = self.local_search_options["shrink_after"]
-            if i < ishrink:
-                newtask = xstarts[i]
-            else:
-                # shrink towards best so far
-                theta = 0.02 + (0.98-0.02)*float(i-ishrink)/float(num_jobs-ishrink)  # when i = ishrink, place 2% weight on best, when i = Imax place 98% weight on max
-                newtask = theta*best[0] + (1-theta)*xstarts[i]
-
-            SubmitTask(newtask,tasksq)
-
-            i = i + 1
+        num_workers = self.computation_options["num_workers"]
+        self.num_jobs = len(self.xstarts)
 
 
-        # All jobs have been submitted.  Start closing down
-        # Add a poison pill for each consumer
-        for i in range(self.num_workers):
-            tasksq.put(None)
-
-        # Wait for all of the tasks to finish
-        tasksq.join()
-
-        # get any remainging results
-        while not resultsq.empty():
-            best = self.ProcessResult(resultsq.get(),best)
-
-        # print the last value of best
-        print( 'best value at the end %f' % best[1])
-        return best
-        
-  def GlobalSearch():
-    pass
-  
-
-    
-class Consumer(multiprocessing.Process):
-
-    def __init__(self, optimizer, task_queue, result_queue):
-        multiprocessing.Process.__init__(self)
-        self.optimizer = optimizer
-        self.task_queue = task_queue
-        self.result_queue = result_queue
-
-    def run(self,local_or_global):
-        proc_name = self.name
-        while True:
-            next_task = self.task_queue.get()
-            if next_task is None:
-                # Poison pill means shutdown
-                print('%s: Exiting' % proc_name)
-                self.task_queue.task_done()
-                break
-
-            if local_or_global == 'local':
-              answer = self.optimizer.minimize(self.optimizer.f, next_task,**self.kwargs)
-            elif local_or_global == 'local':
-              answer = self.optimizer.f(next_task)
-            self.task_queue.task_done()
-            self.result_queue.put(answer)
-        return
-        
 
 
-#-----------------
+        self.best_so_far = (0.0, 1e10)
 
 
-        # Establish communication queues
-        tasksq = multiprocessing.JoinableQueue()
-        resultsq = multiprocessing.Queue()
-        
-        
-        
-        # Start consumers
-        print( 'Creating %d consumers' % self.num_workers)
-        consumers = [ Consumer(tasksq, resultsq,**kwargs)
-                      for i in range(self.num_workers) ]
-        for w in consumers:
-            w.start()
+        self.result_trackers = []
+        self.submit_counter = 0
+        for i in range(num_workers):
+            self.SubmitLocalResult()
 
-    
+        # the submissions happen recursively through the callback
+        # here we wait until we have submitted all jobs
+        while self.submit_counter < self.num_jobs:
+            time.sleep(1)
+
+        # here we wait until all jobs are done.
+        [r.wait() for r in self.result_trackers]
+
+
+        return self.best_so_far
+
+
+    def SubmitLocalResult(self):
+        i = self.submit_counter
+        ishrink = self.local_search_options["shrink_after"]
+        newtask = self.xstarts.pop()
+        if i >= ishrink: # shrink towards best so far
+            theta = 0.02 + (0.98-0.02)*float(i-ishrink)/float(self.num_jobs-ishrink)  # when i = ishrink, place 2% weight on best, when i = Imax place 98% weight on max
+            newtask = theta*self.best_so_far[0] + (1-theta)*newtask
+
+        self.result_trackers.append(self.mppool.apply_async(localworker,
+                (self.minimizer,
+                (self.f,newtask,self.initial_step,self.lower_bounds,self.upper_bounds,self.local_search_options["xtol_rel"],self.local_search_options["ftol_rel"]),
+                self.resultsq),
+                callback = self.ProcessLocalResult,
+                error_callback = self.ErrorCallback ) )
+
+        self.submit_counter += 1
+
+
+    def ProcessLocalResult(self,result):
+
+        with open(self.SRF,"a") as srf:
+            srf.write(str(result[1]) + ' ' + str(result[0]) + '\n')
+
+        if result[1] < self.best_so_far[1] :
+            print( 'best so far %f' % result[1])
+            self.best_so_far = result
+
+        if len(self.xstarts) > 0:
+            self.SubmitLocalResult()
+
+    def ErrorCallback(self,e):
+        print('Error found in local search:')
+        print(e)
+        if len(self.xstarts) > 0:
+            self.SubmitLocalResult()
+
+
+
+
+
+def localworker(f,x,resultsq):
+    answer = f(*x)
+    resultsq.put( answer )
+    return answer
+
+
+def BOBYQA(f,x,initial_step,lower_bounds,upper_bounds,xtol_rel,ftol_rel):
+    opt = nlopt.opt(nlopt.LN_BOBYQA, len(x))
+    fwrapped = lambda x,grad: f(x)
+    opt.set_min_objective(fwrapped)
+    opt.set_xtol_rel(xtol_rel)
+    opt.set_ftol_rel(ftol_rel)
+
+    if not initial_step is None:
+        opt.set_initial_step(initial_step)
+
+    if not lower_bounds is None:
+        opt.set_lower_bounds(lower_bounds)
+
+    if not upper_bounds is None:
+        opt.set_upper_bounds(upper_bounds)
+
+    xopt = opt.optimize(x)
+    minf = opt.last_optimum_value()
+    return (xopt, minf)
+
+
+
+def NelderMead(f,x,initial_step,lower_bounds,upper_bounds,xtol_rel,ftol_rel):
+    """Note that NM doesn't impose bounds on optimization.
+    The arguments initial_step, lower_bounds, and upper_bounds are not used.
+    """
+    res =  scipy_minimize(f, x, method='nelder-mead',
+            options={'frtol': ftol_rel, 'xrtol': xtol_rel, 'disp': False})
+    return (res.x, res.fun)
