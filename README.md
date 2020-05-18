@@ -1,9 +1,9 @@
 # TikTak
-Python implementation of Guvenen's TikTak optimization routine described in "Benchmarking Global Optimizers" by Arnoud, Guvenen, and Kleineberg.  They write "TikTak belongs to the class of multistart algorithms, which conducts local searches from carefully selected points in the parameter space. The algorithm starts with a broad exploration of the (parameter) space and uses the information it accumulates to increasingly focus the search on the most promising region."  This implementation works in parallel making use of the Python multiprocessing module.  
+Python implementation of Guvenen's TikTak optimization routine described in [Benchmarking Global Optimizers](https://fguvenendotcom.files.wordpress.com/2019/09/agk2019-september-nber-submit.pdf) by Arnoud, Guvenen, and Kleineberg.  They write "TikTak belongs to the class of multistart algorithms, which conducts local searches from carefully selected points in the parameter space. The algorithm starts with a broad exploration of the (parameter) space and uses the information it accumulates to increasingly focus the search on the most promising region."  This implementation works in parallel making use of the Python multiprocessing module.  
 
 
 
-Requirements: python 3.7+, numpy, and (nlopt)[https://pypi.org/project/nlopt/].
+Requirements: python 3.7+, numpy, and [nlopt](https://pypi.org/project/nlopt/).
 
 ## Quick start
 
