@@ -5,6 +5,7 @@ from scipy.optimize import minimize as scipy_minimize
 import nlopt
 import sobol
 import time
+from datetime import datetime
 
 class TTOptimizer:
     """"Optimizer for the TikTak algorithm."""
@@ -14,7 +15,6 @@ class TTOptimizer:
         self.global_search_options = global_search_options
         self.local_search_options = local_search_options
         self.SRF = os.path.join(computation_options["working_dir"],"searchResults.dat")
-        self.XSF = os.path.join(computation_options["working_dir"],"xstarts.dat")
 
         if self.local_search_options['algorithm'].lower() == 'bobyqa':
             self.minimizer = BOBYQA
@@ -30,6 +30,13 @@ class TTOptimizer:
         self.upper_bounds = upper_bounds
         self.initial_step = 0.1*(upper_bounds-lower_bounds)
         self.nparam = len(lower_bounds)
+
+        with open(self.SRF,"a") as srf:
+            srf.write('----------------------------------' + '\n')
+            srf.write('Begin logging optimization results' + '\n')
+            srf.write(str(datetime.now()) + '\n')
+            srf.write('----------------------------------' + '\n')
+            
 
         self.mppool = multiprocessing.Pool(processes=self.computation_options["num_workers"])
         self.xstarts = list(self.GlobalSearch())
